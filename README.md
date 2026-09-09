@@ -1,136 +1,271 @@
 # Banking Fraud Detection & ETL Pipeline
 
-An end-to-end, **production-inspired data engineering pipeline** that ingests, transforms, and analyzes large-scale banking transaction data to identify fraudulent activity.
+An end-to-end, production-inspired data engineering pipeline that ingests, transforms, validates, analyzes, and stores large-scale banking transaction data for fraud-risk analysis.
 
-The pipeline is orchestrated using **Apache Airflow** and processes **6,362,620 transactions** from raw ingestion through transformation, fraud-risk feature engineering, and PostgreSQL loading for downstream SQL analysis.
+The pipeline uses **AWS S3 for raw data storage**, **Apache Airflow for orchestration**, **Python/PyArrow for transformation**, and **PostgreSQL for analytical storage**.
+
+The validated pipeline successfully processed **6,362,620 PaySim transactions** end-to-end.
+
+---
 
 ## Problem Statement
 
-Banks process millions of transactions daily and need automated systems to identify potentially fraudulent activity without manually reviewing every transaction.
+Banks process millions of transactions and need automated systems to identify potentially fraudulent activity and prioritize high-risk transactions.
 
-This project simulates that workflow using the **PaySim synthetic transaction dataset**, implementing ingestion, transformation, feature engineering, data validation, orchestration, and analytical storage while keeping each stage reproducible and auditable.
+This project simulates a banking fraud data engineering workflow using the **PaySim synthetic transaction dataset**.
+
+The pipeline demonstrates:
+
+* Cloud-based raw data storage
+* Data ingestion
+* Data transformation
+* Fraud feature engineering
+* Data quality validation
+* Workflow orchestration
+* PostgreSQL bulk loading
+* Fraud-risk analysis using SQL
+
+---
 
 ## Architecture
 
 ```text
-PaySim CSV
-    |
-    v
-Python Ingestion
-    |
-    v
-Data Transformation
-(Python / PyArrow)
-    |
-    v
-Curated Parquet Data
-    |
-    v
-Fraud Detection &
-Feature Engineering
-    |
-    v
-Apache Airflow
-Orchestration
-    |
-    v
-PostgreSQL
-fact_transactions
-    |
-    v
-SQL Fraud Analysis
+                    AWS S3
+              Raw PaySim Dataset
+                      |
+                      v
+              +----------------+
+              | Download from  |
+              |      S3        |
+              +-------+--------+
+                      |
+                      v
+              +----------------+
+              | Transformation |
+              | Python/PyArrow  |
+              +-------+--------+
+                      |
+                      v
+              +----------------+
+              | Data Validation|
+              +-------+--------+
+                      |
+                      v
+              +----------------+
+              |   PostgreSQL   |
+              |fact_transactions|
+              +-------+--------+
+                      |
+                      v
+              +----------------+
+              | Fraud Analysis |
+              | Risk Scoring   |
+              +----------------+
+
+              Apache Airflow
+              Orchestration
 ```
+
+---
+
+## Airflow DAG
+
+The complete workflow is orchestrated using Apache Airflow.
+
+```text
+download_from_s3
+        |
+        v
+transform_data
+        |
+        v
+validate_data
+        |
+        v
+load_to_postgres
+        |
+        v
+fraud_analysis
+```
+
+All five tasks were successfully executed in the validated pipeline run.
+
+---
 
 ## Key Highlights
 
-* **Engineered** an end-to-end ETL pipeline processing **6.3M+ banking transactions**, from raw CSV ingestion to a queryable fraud-analytics table.
+* **Processed 6.36M+ banking transactions** from the PaySim dataset through an end-to-end ETL pipeline.
 
-* **Orchestrated** the complete workflow — extract, transform, fraud detection, and load — as a **4-task Apache Airflow DAG**, with all tasks executing successfully end-to-end.
+* **Integrated AWS S3** as the raw-data storage layer and implemented programmatic S3 ingestion using Python and Boto3.
 
-* **Implemented fraud-risk feature engineering** including high-value transaction detection, balance-mismatch detection, composite risk scoring, and LOW / MEDIUM / HIGH risk classification.
+* **Orchestrated five pipeline stages using Apache Airflow**, including S3 ingestion, transformation, validation, PostgreSQL loading, and fraud analysis.
 
-* **Optimized PostgreSQL ingestion** by replacing row-based `executemany()` inserts with PostgreSQL bulk `COPY`, resolving connection timeouts during multi-million-row loading.
+* **Implemented fraud-risk feature engineering** using high-value transaction detection, balance-mismatch detection, composite risk scoring, and LOW/MEDIUM/HIGH risk classification.
 
-* **Used Parquet as a curated storage layer** between transformation and database loading, providing an efficient columnar format for analytics workflows.
+* **Optimized PostgreSQL loading** using PostgreSQL bulk `COPY` to efficiently handle multi-million-row data loading.
 
-* **Validated data integrity** by reconciling fraudulent and genuine transaction counts against the total loaded records, confirming zero record loss.
+* **Used Parquet as a curated storage layer** between transformation and database loading.
 
-## Pipeline Flow
+* **Validated data integrity** by reconciling transaction counts and verifying the final PostgreSQL dataset.
 
-### 1. Extract / Ingestion
+* Implemented AWS IAM access using a **least-privilege S3 policy** allowing only the required bucket listing, object read, and object write operations.
 
-Raw PaySim transaction data is read from the project's data directory and prepared for downstream processing.
+---
 
-### 2. Transform
+# Pipeline Components
 
-Transaction data is cleaned and transformed using **Python and PyArrow**, then persisted as curated Parquet files.
+## 1. AWS S3 — Raw Data Storage
 
-The transformation handles fields including:
+The raw PaySim dataset is stored in an Amazon S3 bucket.
+
+```text
+S3 Bucket
+│
+├── raw/
+│   └── PS_20174392719_1491204439457_log.csv.zip
+│
+├── processed/
+│
+└── fraud/
+```
+
+The pipeline downloads the raw dataset from S3 using **Boto3**.
+
+The S3 download is implemented in:
+
+```text
+ingestion/s3_download.py
+```
+
+---
+
+## 2. Data Ingestion
+
+The `s3_download.py` script:
+
+1. Connects to Amazon S3 using Boto3.
+2. Reads the configured bucket and object key.
+3. Downloads the raw PaySim ZIP file.
+4. Stores it in the project's local raw-data directory.
+
+Example S3 object:
+
+```text
+s3://<bucket>/raw/PS_20174392719_1491204439457_log.csv.zip
+```
+
+AWS credentials are managed outside the source code using the AWS CLI configuration.
+
+---
+
+## 3. Data Transformation
+
+Transaction data is cleaned and transformed using **Python and PyArrow**.
+
+The transformation creates a curated Parquet dataset for downstream processing.
+
+Important transaction attributes include:
 
 * Transaction step
 * Transaction type
 * Transaction amount
-* Origin and destination accounts
-* Pre-transaction balances
-* Post-transaction balances
-* Fraud indicators
+* Origin account
+* Destination account
+* Origin balance before transaction
+* Origin balance after transaction
+* Destination balance before transaction
+* Destination balance after transaction
+* Fraud indicator
 
-### 3. Fraud Detection & Feature Engineering
-
-Derived fraud-risk features are generated for each transaction:
-
-| Feature                 | Description                                                        |
-| ----------------------- | ------------------------------------------------------------------ |
-| `high_value_flag`       | Flags transactions above a configured high-value threshold         |
-| `balance_mismatch_flag` | Flags inconsistencies between expected and actual account balances |
-| `risk_score`            | Composite score based on fraud-related signals                     |
-| `risk_level`            | Categorizes transactions as LOW, MEDIUM, or HIGH risk              |
-
-### 4. Airflow Orchestration
-
-The complete workflow runs as a single Airflow DAG:
+Curated data is stored in:
 
 ```text
-extract
-   ↓
-transform
-   ↓
-fraud_detection
-   ↓
-load_to_postgres
+data/processed/transactions_curated/
 ```
 
-Airflow manages task dependencies, execution, retries, and workflow visibility.
+---
 
-### 5. PostgreSQL Loading
+## 4. Fraud Detection & Feature Engineering
 
-Curated Parquet data is bulk-loaded into the `fact_transactions` table using PostgreSQL's `COPY` command instead of row-by-row inserts.
+The pipeline generates fraud-related features for every transaction.
 
-This approach was selected to handle the multi-million-row dataset efficiently and avoid the connection timeout encountered with `executemany()`.
+| Feature                 | Description                                                       |
+| ----------------------- | ----------------------------------------------------------------- |
+| `high_value_flag`       | Identifies transactions above the configured high-value threshold |
+| `balance_mismatch_flag` | Identifies inconsistencies between expected and actual balances   |
+| `risk_score`            | Composite fraud-risk score                                        |
+| `risk_level`            | Categorizes transactions as LOW, MEDIUM, or HIGH risk             |
 
-## Final Dataset Statistics
+The risk classification is performed by the fraud-analysis stage of the pipeline.
 
-| Metric                  |     Count |
-| ----------------------- | --------: |
-| Total transactions      | 6,362,620 |
-| Fraudulent transactions |     8,213 |
-| Genuine transactions    | 6,354,407 |
-| LOW risk                | 5,041,152 |
-| MEDIUM risk             | 1,321,452 |
-| HIGH risk               |        16 |
+---
 
-Fraudulent and genuine transaction counts reconcile exactly with the total:
+## 5. Data Validation
+
+The validation stage checks the processed transaction data before database loading.
+
+Validation includes checking:
+
+* Transaction record counts
+* Fraud/genuine record counts
+* Required fields
+* Data consistency
+* Record reconciliation
+
+The validation task must complete successfully before the data is loaded into PostgreSQL.
+
+---
+
+## 6. PostgreSQL Loading
+
+The curated transaction data is loaded into PostgreSQL.
+
+Target table:
+
+```text
+fact_transactions
+```
+
+PostgreSQL bulk `COPY` is used instead of inserting records individually.
+
+This provides a more efficient loading approach for the multi-million-row PaySim dataset.
+
+---
+
+# Final Dataset Statistics
+
+The completed pipeline loaded:
+
+| Metric                  |         Count |
+| ----------------------- | ------------: |
+| Total transactions      | **6,362,620** |
+| Fraudulent transactions |     **8,213** |
+| Genuine transactions    | **6,354,407** |
+| LOW risk                | **5,041,152** |
+| MEDIUM risk             | **1,321,452** |
+| HIGH risk               |        **16** |
+
+Fraudulent and genuine transaction counts reconcile exactly:
 
 ```text
 8,213 + 6,354,407 = 6,362,620
 ```
 
-## Database Schema
+Risk-level counts also reconcile exactly:
 
-### `fact_transactions`
+```text
+5,041,152 + 1,321,452 + 16 = 6,362,620
+```
+
+---
+
+# Database Schema
+
+## `fact_transactions`
 
 | Column                    | Description                            |
 | ------------------------- | -------------------------------------- |
+| `transaction_id`          | Unique transaction identifier          |
 | `step`                    | Simulation time step                   |
 | `transaction_type`        | Type of transaction                    |
 | `amount`                  | Transaction amount                     |
@@ -147,9 +282,11 @@ Fraudulent and genuine transaction counts reconcile exactly with the total:
 | `risk_score`              | Calculated risk score                  |
 | `risk_level`              | LOW / MEDIUM / HIGH                    |
 
-## Sample SQL Analysis
+---
 
-### Overall Fraud Rate
+# Sample SQL Analysis
+
+## Overall Fraud Rate
 
 ```sql
 SELECT
@@ -162,7 +299,7 @@ SELECT
 FROM fact_transactions;
 ```
 
-### Fraud Rate by Transaction Type
+## Fraud Rate by Transaction Type
 
 ```sql
 SELECT
@@ -178,7 +315,7 @@ GROUP BY transaction_type
 ORDER BY fraud_rate_percentage DESC;
 ```
 
-### Fraud by Risk Level
+## Fraud by Risk Level
 
 ```sql
 SELECT
@@ -190,7 +327,7 @@ GROUP BY risk_level
 ORDER BY fraud_transactions DESC;
 ```
 
-### High-Value Fraudulent Transactions
+## High-Value Fraudulent Transactions
 
 ```sql
 SELECT
@@ -207,7 +344,9 @@ ORDER BY amount DESC
 LIMIT 20;
 ```
 
-## Project Structure
+---
+
+# Project Structure
 
 ```text
 Banking_Fraud_Pipeline/
@@ -224,6 +363,7 @@ Banking_Fraud_Pipeline/
 │       └── transactions_curated/
 │
 ├── ingestion/
+│   ├── s3_download.py
 │   └── transaction_ingestion.py
 │
 ├── load/
@@ -244,13 +384,28 @@ Banking_Fraud_Pipeline/
 └── .gitignore
 ```
 
-> Note: The `spark/` directory contains processing scripts developed during the project. The currently validated end-to-end workflow uses Python/PyArrow for transformation and does not claim successful PySpark execution.
+> Note: The `spark/` directory contains processing scripts developed during the project. The currently validated end-to-end workflow uses Python/PyArrow for transformation. PySpark execution is not claimed as part of the validated pipeline.
 
-## Tech Stack
+---
 
-`Python` · `Pandas` · `PyArrow` · `Parquet` · `Apache Airflow` · `PostgreSQL` · `SQL` · `ETL` · `Data Validation` · `Feature Engineering`
+# Tech Stack
 
-## How to Run
+* **Python**
+* **Pandas**
+* **PyArrow**
+* **Parquet**
+* **Boto3**
+* **Amazon S3**
+* **Apache Airflow**
+* **PostgreSQL**
+* **SQL**
+* **Data Validation**
+* **Fraud Feature Engineering**
+* **ETL**
+
+---
+
+# How to Run
 
 Activate the Airflow environment:
 
@@ -258,43 +413,88 @@ Activate the Airflow environment:
 source ~/airflow_venv/bin/activate
 ```
 
-Start the Airflow services and trigger the DAG:
+Start the Airflow scheduler:
 
-```text
-banking_fraud_pipeline
+```bash
+airflow scheduler
 ```
 
-Task sequence:
+Trigger the DAG:
 
-```text
-extract -> transform -> fraud_detection -> load_to_postgres
+```bash
+airflow dags trigger banking_fraud_pipeline
 ```
 
-After successful execution, validate the loaded data by querying the `fact_transactions` table in PostgreSQL.
+The DAG executes the following workflow:
 
-## Roadmap
+```text
+download_from_s3
+        ↓
+transform_data
+        ↓
+validate_data
+        ↓
+load_to_postgres
+        ↓
+fraud_analysis
+```
 
-The project can be extended toward a cloud-native data engineering architecture:
+After successful execution, the final data can be verified in PostgreSQL using the `fact_transactions` table.
 
-* Migrate raw storage from local disk to **AWS S3**
+---
+
+# AWS Configuration
+
+The project uses:
+
+* Amazon S3 for raw data storage
+* IAM for controlled access
+* AWS CLI for local authentication
+* Boto3 for Python-based S3 access
+* AWS Budget for cost monitoring
+
+The S3 IAM policy follows a limited-access approach, allowing only the required:
+
+```text
+s3:ListBucket
+s3:GetObject
+s3:PutObject
+```
+
+No AWS credentials are stored in the source code.
+
+---
+
+# Future Enhancements
+
+Possible future improvements include:
+
+* Migrate transformation processing to **Apache Spark/PySpark**
+* Run large-scale Spark processing using **AWS EMR**
 * Replace local PostgreSQL with **Amazon Redshift Serverless**
-* Provision infrastructure using **Terraform**
-* Move large-scale PySpark processing to **AWS EMR**
-* Add **Great Expectations** for automated data quality checks
-* Build a **Streamlit** dashboard for fraud monitoring
-* Normalize the transaction model into a proper **star schema**
+* Provision AWS infrastructure using **Terraform**
+* Add **Great Expectations** for advanced data-quality validation
+* Build a **Streamlit** fraud-monitoring dashboard
+* Introduce a proper **star-schema data warehouse**
+* Add dimensional tables such as:
 
   * `dim_account`
   * `dim_transaction_type`
   * `dim_date`
   * `fact_transactions`
+* Add automated CI/CD for pipeline testing and deployment
 
-## Project Outcome
+---
 
-This project demonstrates a complete, production-inspired data engineering workflow on a large banking transaction dataset, covering:
+# Project Outcome
 
-* Large-scale data ingestion
-* Data transformation
+This project demonstrates an end-to-end data engineering workflow using a large banking transaction dataset.
+
+The implemented pipeline covers:
+
+* AWS S3 raw-data ingestion
+* Large-scale transaction processing
+* Python/PyArrow transformation
 * Parquet-based curated storage
 * Fraud feature engineering
 * Risk scoring
@@ -302,5 +502,18 @@ This project demonstrates a complete, production-inspired data engineering workf
 * Apache Airflow orchestration
 * PostgreSQL bulk loading
 * Analytical SQL
+* AWS IAM access control
 
-The complete pipeline successfully processed and verified **6,362,620 transactions** end-to-end.
+The complete validated pipeline successfully processed and verified:
+
+**6,362,620 banking transactions**
+
+with the final risk distribution:
+
+```text
+LOW       5,041,152
+MEDIUM    1,321,452
+HIGH             16
+```
+
+The project provides a practical foundation for transitioning the pipeline toward a fully cloud-native data engineering architecture.
