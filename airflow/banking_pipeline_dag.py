@@ -16,7 +16,13 @@ with DAG(
     catchup=False,
     tags=["banking", "fraud", "spark", "postgresql"],
 ) as dag:
-
+    download_from_s3 = BashOperator(
+        task_id="download_from_s3",
+        bash_command=f"""
+cd {PROJECT_DIR}
+{PYTHON_EXE} ingestion/s3_download.py
+""",
+    )
     transform_data = BashOperator(
         task_id="transform_data",
         bash_command=f"""
@@ -49,4 +55,4 @@ cd {PROJECT_DIR}
 """,
     )
 
-    transform_data >> validate_data >> load_to_postgres >> fraud_analysis
+    download_from_s3 >> transform_data >> validate_data >> load_to_postgres >> fraud_analysis
